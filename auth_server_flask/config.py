@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 # Load .env file at the very beginning if it exists
 load_dotenv()
 print("DEBUG config.py: dotenv loaded (if .env exists)")
+import json # ★ json モジュールをインポート ★
 
 # --- グローバル設定値 (configモジュールの属性として管理) ---
 GCP_PROJECT_ID = None
@@ -48,12 +49,26 @@ def get_secret_from_sm(secret_name_on_sm):
         print(f"SMからの取得失敗 ('{secret_name_on_sm}'): {e}")
         return None
 
+# 設定値のサマリーをログ出力するヘルパー関数
+def print_config_summary(stage_name=""):
+    print(f"--- Config Summary ({stage_name}) ---")
+    print(f"  ENV_TYPE: {ENV_TYPE}")
+    print(f"  GCP_PROJECT_ID: {GCP_PROJECT_ID}")
+    print(f"  GOOGLE_CLIENT_ID: {'Set' if GOOGLE_CLIENT_ID else 'Not Set'}")
+    print(f"  FUNCTION_BASE_URL: {FUNCTION_BASE_URL}")
+    print(f"  REDIRECT_URI: {REDIRECT_URI}")
+    print(f"  STREAMLIT_APP_URL: {STREAMLIT_APP_URL}")
+    print(f"  ALLOWED_USERS_LIST: {ALLOWED_USERS_LIST}") # allowed_users_list_str ではなく ALLOWED_USERS_LIST
+    print(f"---------------------------------")
 # --- 設定値の初期化関数 ---
 def initialize_app_configs(mode_from_arg=None):
     global GCP_PROJECT_ID, GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, JWT_SECRET_KEY
     global STREAMLIT_APP_URL, FUNCTION_BASE_URL, REDIRECT_URI, ALLOWED_USERS_LIST
     global secret_manager_client, ENV_TYPE
     global _app_configs_initialized
+
+    # allowed_users_list_json_str を関数の最初で初期化
+    allowed_users_list_json_str = None # ★ 変数名を json_str に変更して区別しやすくする ★
 
     if _app_configs_initialized and not mode_from_arg: # 既に初期化済みで、強制的なモード指定がない場合はスキップ
         print("DEBUG initialize_app_configs: Already initialized. Skipping.")
@@ -63,9 +78,10 @@ def initialize_app_configs(mode_from_arg=None):
 
     # mode_from_arg があれば ENV_TYPE を上書き
     # os.environ.get("ENV_ARG") はローカル実行時の引数から来る想定
-    # os.environ.get("ENV") はCloud Functions/Runの環境変数から来る想定
-    effective_mode = mode_from_arg or os.environ.get("ENV_ARG") or os.environ.get("ENV", "prod")
-    ENV_TYPE = effective_mode.lower()
+    if mode_from_arg:
+        ENV_TYPE = mode_from_arg.lower()
+    else:
+        ENV_TYPE = os.environ.get("ENV", "prod").lower() # デフォルトは 'prod'
 
     GCP_PROJECT_ID = os.environ.get('GCP_PROJECT')
 
@@ -79,7 +95,7 @@ def initialize_app_configs(mode_from_arg=None):
         JWT_SECRET_KEY = os.environ.get("DIRECT_JWT_SECRET_KEY")
         STREAMLIT_APP_URL = os.environ.get("DIRECT_STREAMLIT_APP_URL")
         FUNCTION_BASE_URL = os.environ.get("DIRECT_FUNCTION_BASE_URL")
-        allowed_users_list_str = os.environ.get("DIRECT_ALLOWED_USERS_LIST_STR")
+        allowed_users_list_json_str = os.environ.get("DIRECT_ALLOWED_USERS_LIST_JSON_STR") # ★ _JSON_STR を付けるなどして区別 ★
     elif ENV_TYPE == 'local_sm_test' or ENV_TYPE == 'prod':
         print(f"DEBUG: '{ENV_TYPE}' モード: Secret Manager を利用します。")
         if not GCP_PROJECT_ID:
@@ -121,7 +137,16 @@ def initialize_app_configs(mode_from_arg=None):
         JWT_SECRET_KEY = get_secret_from_sm(sm_jwt_key)
         STREAMLIT_APP_URL = get_secret_from_sm(sm_streamlit_url)
         FUNCTION_BASE_URL = get_secret_from_sm(sm_function_base_url)
-        allowed_users_list_str = get_secret_from_sm(sm_allowed_list)
+        allowed_users_list_json_str = get_secret_from_sm(sm_allowed_list)
+
+        # local_sm_test モードの場合のローカル用URL上書き
+        if ENV_TYPE == 'local_sm_test':
+            print("DEBUG: local_sm_test mode. Overriding URLs for local testing.")
+            FUNCTION_BASE_URL = "http://localhost:8080"
+            # REDIRECT_URI はこの後の FUNCTION_BASE_URL からの生成に任せる
+            STREAMLIT_APP_URL = "http://localhost:8501"
+            # ALLOWED_USERS_LIST はSMから読み込んだものを使うか、ここで上書きも可能
+            # allowed_users_list_json_str がSMから読み込めなかった場合は None のまま
     else:
         raise ValueError(f"無効なENVタイプが指定されました: '{ENV_TYPE}'。'local_direct', 'local_sm_test', 'prod' のいずれかである必要があります。")
 
@@ -131,12 +156,27 @@ def initialize_app_configs(mode_from_arg=None):
     else:
         REDIRECT_URI = None # FUNCTION_BASE_URLがない場合はNone
 
-    # ALLOWED_USERS_LIST の設定
-    if allowed_users_list_str:
-        ALLOWED_USERS_LIST = [email.strip() for email in allowed_users_list_str.split(',') if email.strip()]
+    # ★★★ ALLOWED_USERS_LIST の設定部分を修正 ★★★
+    if allowed_users_list_json_str:
+        try:
+            parsed_list = json.loads(allowed_users_list_json_str) # JSONとしてパース
+            if isinstance(parsed_list, list):
+                # 各要素が文字列であることを期待し、前後の空白を除去し、小文字に統一
+                ALLOWED_USERS_LIST = [
+                    str(email).strip().lower() 
+                    for email in parsed_list 
+                    if isinstance(email, str) and str(email).strip()
+                ]
+                print(f"DEBUG initialize_app_configs: Successfully parsed ALLOWED_USERS_LIST: {ALLOWED_USERS_LIST}")
+            else:
+                print(f"警告: Secret Managerから取得した許可ユーザーリストがJSON配列ではありません。値: {parsed_list}")
+                ALLOWED_USERS_LIST = [] # パース失敗時は空リスト
+        except json.JSONDecodeError as e:
+            print(f"警告: Secret Managerからの許可ユーザーリストのJSONパースに失敗しました: {e}。取得した文字列: '{allowed_users_list_json_str}'")
+            ALLOWED_USERS_LIST = [] # パース失敗時は空リスト
     else:
-        ALLOWED_USERS_LIST = ["your-default-test-email@example.com"] # デフォルト値またはエラー
-        print(f"警告: 許可ユーザーリスト(ALLOWED_USERS_LIST)が設定されていません。デフォルト値 '{ALLOWED_USERS_LIST}' を使用します。")
+        ALLOWED_USERS_LIST = [] # デフォルトは空リスト
+        print(f"警告: 許可ユーザーリストの元となる文字列(allowed_users_list_json_str)が設定/取得されていません。ALLOWED_USERS_LISTは空になります。")
 
     # 必須設定値のチェック
     required_vars = {
@@ -151,32 +191,20 @@ def initialize_app_configs(mode_from_arg=None):
     if missing:
         raise ValueError(f"必須設定値が不足しています: {', '.join(missing)}。 (現在のENV_TYPE: '{ENV_TYPE}')")
 
-    # 詳細ログ（必要に応じてコメントアウト）
-    print(f"DEBUG init_configs: GOOGLE_CLIENT_ID: {'Set' if GOOGLE_CLIENT_ID else 'Not Set'}")
-    print(f"DEBUG init_configs: GOOGLE_CLIENT_SECRET: {'Set' if GOOGLE_CLIENT_SECRET else 'Not Set'}")
-    print(f"DEBUG init_configs: JWT_SECRET_KEY: {'Set' if JWT_SECRET_KEY else 'Not Set'}")
-    print(f"DEBUG init_configs: STREAMLIT_APP_URL: {STREAMLIT_APP_URL}")
-    print(f"DEBUG init_configs: FUNCTION_BASE_URL: {FUNCTION_BASE_URL}")
-    print(f"DEBUG init_configs: REDIRECT_URI: {REDIRECT_URI}")
-    print(f"DEBUG init_configs: ALLOWED_USERS_LIST: {ALLOWED_USERS_LIST}")
-
+    print_config_summary("final values after initialize_app_configs")
     _app_configs_initialized = True
     print("DEBUG: initialize_app_configs COMPLETE")
 
 def are_configs_initialized():
     """設定が初期化されたかどうかを確認する"""
     return _app_configs_initialized
-
 # --- モジュールロード時の初期化試行 ---
 # Cloud Functionsのような環境では、モジュールがロードされた時点で初期化が必要
 # ただし、ローカル実行時 (`if __name__ == '__main__':`) は引数でモードを指定できるため、
 # ここでの呼び出しはデフォルトのENVを参照する。
 # initialize_app_configs の中で、引数なしで呼び出された場合の ENV_TYPE の解決ロジックに依存。
-try:
-    print("DEBUG config.py: Attempting initial configuration load (module scope)...")
-    initialize_app_configs() # mode_from_argなしで呼び出し
-except Exception as e:
-    print(f"CRITICAL (config.py module scope init): 設定の初期読み込みに失敗しました: {e}")
-    # ここでエラーが発生すると、このモジュールをインポートしただけで問題が起きる可能性がある。
-    # 起動を止めるか、部分的に機能するかはアプリケーションの要件による。
-    # Cloud Functions環境では、起動失敗につながる可能性が高い。
+# try:
+#     print("DEBUG config.py: Attempting initial configuration load (module scope)...")
+#     initialize_app_configs() # ← これをコメントアウトまたは削除
+# except Exception as e:
+#     print(f"CRITICAL (config.py module scope init): 設定の初期読み込みに失敗しました: {e}")

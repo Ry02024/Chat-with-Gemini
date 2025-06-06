@@ -1,0 +1,61 @@
+# cloudbuild.yaml (単一サービス auth-service をデプロイ)
+
+steps:
+  # auth-service 関数のデプロイ (auth-login と auth-callback の両方を処理)
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy-auth-service'
+    entrypoint: 'gcloud'
+    args:
+      - 'functions'
+      - 'deploy'
+      - 'auth-service' # ★新しい単一の関数名★
+      - '--project=${PROJECT_ID}'
+      - '--region=${_CF_REGION}'
+      - '--gen2'
+      - '--runtime=python310'
+      - '--source=./auth_server_flask' # ソースは共通
+      - '--entry-point=auth_http'    # エントリーポイントも共通
+      - '--trigger-http'
+      - '--allow-unauthenticated'
+      - '--service-account=${_CF_SERVICE_ACCOUNT_EMAIL}'
+      # 環境変数のSM名は、prodモードで参照するものを指定
+      # CALLBACK_URI関連のSM名は不要になる (FUNCTION_BASE_URLから構築するため)
+      - '--set-env-vars=ENV=prod,GCP_PROJECT=${PROJECT_ID},SM_NAME_FOR_GOOGLE_CLIENT_ID=${_SM_NAME_GCID},SM_NAME_FOR_GOOGLE_CLIENT_SECRET=${_SM_NAME_GC_SECRET},SM_NAME_FOR_JWT_SECRET_KEY=${_SM_NAME_JWT_KEY},SM_NAME_FOR_ALLOWED_USERS_LIST=${_SM_NAME_ALLOWED_LIST},SM_NAME_FOR_STREAMLIT_APP_URL=${_SM_NAME_STREAMLIT_URL},SM_NAME_FOR_FUNCTION_BASE_URL=${_SM_NAME_FUNCTION_BASE_URL}'
+      - '--quiet'
+
+  # デプロイされた関数のURLを取得してログに出力
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'get-deployed-urls'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        SERVICE_URL=$$(gcloud functions describe auth-service --project=${PROJECT_ID} --region=${_CF_REGION} --gen2 --format="value(serviceConfig.uri)") && \
+        echo "--- Deployed Function URL (Cloud Run service URI) ---" && \
+        echo "auth-service URI: $$SERVICE_URL" && \
+        echo "" && \
+        echo "IMPORTANT NEXT STEPS:" && \
+        echo "1. Update Secret Manager:" && \
+        echo "   - Set '${_SM_NAME_FUNCTION_BASE_URL}' in Secret Manager to: $$SERVICE_URL" && \
+        echo "   - Ensure '${_SM_NAME_STREAMLIT_URL}' in Secret Manager has the correct URL for your Streamlit app (if deployed)." && \
+        echo "2. Update Google OAuth Client 'Authorized redirect URIs' with:" && \
+        echo "   $$SERVICE_URL/auth_callback" && \
+        echo "3. Update Streamlit's secrets.toml:" && \
+        echo "   AUTH_LOGIN_URL = $$SERVICE_URL/auth_login" && \
+        echo "   FUNCTION_BASE_URL = $$SERVICE_URL (for JWT issuer)"
+    waitFor:
+      - 'deploy-auth-service'
+
+# 置換変数
+substitutions:
+  _CF_REGION: 'asia-northeast1'
+  _CF_SERVICE_ACCOUNT_EMAIL: 'cf-auth-service-account@my-auth-project-459900.iam.gserviceaccount.com'
+  _SM_NAME_GCID: 'GOOGLE_CLIENT_ID_PROD_SM'
+  _SM_NAME_GC_SECRET: 'GOOGLE_CLIENT_SECRET_PROD_SM'
+  _SM_NAME_JWT_KEY: 'JWT_SECRET_KEY_PROD_SM'
+  _SM_NAME_ALLOWED_LIST: 'ALLOWED_USERS_LIST_PROD_SM'
+  _SM_NAME_STREAMLIT_URL: 'STREAMLIT_APP_URL_PROD_SM'
+  _SM_NAME_FUNCTION_BASE_URL: 'FUNCTION_BASE_URL_PROD_SM'
+  # _SM_NAME_CALLBACK_URI_PROD は不要になった
+
+timeout: '1200s'

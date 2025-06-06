@@ -1,0 +1,80 @@
+# cloudbuild_streamlit.yaml
+steps:
+  # StreamlitアプリのDockerイメージをビルド
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Build Streamlit Docker Image'
+    args:
+      - 'build'
+      - '-t'
+      - '${_AR_HOSTNAME}/${PROJECT_ID}/${_AR_REPO_NAME}/${_SERVICE_NAME_STREAMLIT}:latest'
+      - './streamlit_app' # Dockerfileがあるディレクトリ
+
+  # ビルドしたイメージをArtifact Registryにプッシュ
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'Push Streamlit Image Latest'
+    args: ['push', '${_AR_HOSTNAME}/${PROJECT_ID}/${_AR_REPO_NAME}/${_SERVICE_NAME_STREAMLIT}:latest']
+    waitFor: ['Build Streamlit Docker Image']
+
+# cloudbuild_streamlit.yaml の Deploy Streamlit to Cloud Run ステップ
+
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'Deploy Streamlit to Cloud Run'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - '${_SERVICE_NAME_STREAMLIT}'
+      - '--image=${_AR_HOSTNAME}/${PROJECT_ID}/${_AR_REPO_NAME}/${_SERVICE_NAME_STREAMLIT}:latest'
+      - '--platform=managed'
+      - '--region=${_CR_REGION}'
+      - '--allow-unauthenticated'
+      - '--port=8080'
+      # 環境変数の設定 (カンマ区切りで1つの文字列として渡す)
+      - '--set-env-vars=STREAMLIT_AUTH_LOGIN_URL=${_CF_AUTH_SERVICE_BASE_URL}/auth_login,STREAMLIT_EXPECTED_ISSUER=${_CF_AUTH_SERVICE_BASE_URL},STREAMLIT_EXPECTED_AUDIENCE=${_STREAMLIT_APP_PUBLIC_URL}'
+      # Secret Managerからシークレットを環境変数としてマウント (カンマ区切りで1つの文字列として渡す)
+      - '--set-secrets=STREAMLIT_JWT_SECRET_KEY=${_SM_NAME_SHARED_JWT_KEY}:latest,FIREBASE_SERVICE_ACCOUNT_JSON_STR=${_SM_NAME_FIREBASE_SA_KEY}:latest'
+      - '--service-account=${_STREAMLIT_SERVICE_ACCOUNT_EMAIL}'
+      - '--project=${PROJECT_ID}'
+      - '--quiet'
+    waitFor:
+      - 'Push Streamlit Image Latest'
+
+  # デプロイされたStreamlitアプリのURLをログに出力するステップ
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'Get Streamlit App URL'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        STREAMLIT_URL=$$(gcloud run services describe ${_SERVICE_NAME_STREAMLIT} --platform managed --region ${_CR_REGION} --project ${PROJECT_ID} --format="value(status.url)") && \
+        echo "--------------------------------------------------------------------" && \
+        echo "Deployed Streamlit App URL: $$STREAMLIT_URL" && \
+        echo "ACTION REQUIRED IF THIS WAS THE FIRST DEPLOYMENT OR URL CHANGED:" && \
+        echo "1. Update Cloud Run environment variable 'STREAMLIT_EXPECTED_AUDIENCE' to this URL if it's different (and redeploy this Streamlit app)." && \
+        echo "2. Update Secret Manager '${_SM_NAME_CF_STREAMLIT_URL}' (for Cloud Functions) to this URL and redeploy Cloud Functions (auth-service)." && \
+        echo "--------------------------------------------------------------------"
+    waitFor:
+      - 'Deploy Streamlit to Cloud Run'
+
+images:
+  - '${_AR_HOSTNAME}/${PROJECT_ID}/${_AR_REPO_NAME}/${_SERVICE_NAME_STREAMLIT}:latest'
+
+substitutions:
+  _AR_HOSTNAME: 'asia-northeast1-docker.pkg.dev'
+  _AR_REPO_NAME: 'streamlit-apps' # 作成したArtifact Registryリポジトリ名
+  _SERVICE_NAME_STREAMLIT: 'my-streamlit-auth-app' # Cloud Runのサービス名 (実際のサービス名に合わせる)
+  _CR_REGION: 'asia-northeast1'
+  # Cloud Functions (auth-service) のベースURL
+  _CF_AUTH_SERVICE_BASE_URL: 'https://auth-service-agtqjunobq-an.a.run.app' # ★ 正しいCloud FunctionsのベースURL ★
+  # Streamlitアプリの公開URL (デプロイ後に確定するが、初回はプレースホルダーでも可、2回目以降は確定値をここに入れる)
+  _STREAMLIT_APP_PUBLIC_URL: 'https://my-streamlit-auth-app-1023395899595.asia-northeast1.run.app' # ★ Streamlitアプリの実際の公開URL ★
+  # JWT秘密鍵のSecret Manager上の名前
+  _SM_NAME_SHARED_JWT_KEY: 'JWT_SECRET_KEY_PROD_SM'
+  # Streamlitアプリ実行用サービスアカウント
+  _STREAMLIT_SERVICE_ACCOUNT_EMAIL: 'streamlit-app-runner@my-auth-project-459900.iam.gserviceaccount.com'
+  # Cloud Functionsが参照する「StreamlitアプリのURL」を格納するSM上のシークレット名
+  _SM_NAME_CF_STREAMLIT_URL: 'STREAMLIT_APP_URL_PROD_SM'
+  # ★★★ FirestoreサービスアカウントキーのSecret Manager上の名前を追加 ★★★
+  _SM_NAME_FIREBASE_SA_KEY: 'streamlit-firebase-sa-key' # Secret Managerで登録したFirebase SAキーのシークレット名
+
+timeout: '1200s'

@@ -1,5 +1,8 @@
 # google-auth-oauthlib>=0.5,<1.3
-# google-cloud-secret-manager>=2.0,<2.19 # 追加
+google-cloud-secret-manager>=2.0,<2.19 # 追加
 # functions-framework>=3.0,<3.6 # 追加
+flask>=3.0,<3.1 # 追加
 streamlit>=1.20.0  # 適切なバージョンを指定
+firebase-admin
 PyJWT>=2.0,<2.9    # 適切なバージョンを指定
+python-dotenv

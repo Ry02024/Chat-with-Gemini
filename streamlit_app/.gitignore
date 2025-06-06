@@ -1,0 +1,25 @@
+# Python
+venv*/
+*.pyc
+__pycache__/
+*.log
+
+# IDE / OS
+.vscode/
+.idea/
+*.DS_Store
+Thumbs.db
+
+# Environment files
+auth_server_flask/.env
+
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# Secrets (念のため)
+*.pem
+*.key
+
+# Versioned or backup files
+main_v*.py
+cloudbuild_v*.yaml

@@ -1,22 +1,29 @@
 # Python
-venv*/
+venv/
 *.pyc
 __pycache__/
 *.log
+auth_server_flask/venv_auth_flask/  # ★ これを追加 ★
+streamlit_app/venv_streamlit_local/ # ★ これも追加 (Streamlit側も同様なら) ★
 
 # IDE / OS
 .vscode/
 .idea/
-*.DS_Store # macOSの隠しファイル (ドットから始まるので注意)
-Thumbs.db # Windowsの画像キャッシュファイル
+.DS_Store
+Thumbs.db
 
 # Environment files
-auth_server_flask/.env
-# streamlit_app/.env # Streamlitはsecrets.tomlを使うので不要とコメントアウトでOK
+auth_server_flask/.env # auth_server_flaskディレクトリ内の.envファイル
+*.env                  # ルートおよびサブディレクトリ内の全ての.envファイル
 
 # Streamlit secrets
 streamlit_app/.streamlit/secrets.toml
 
-# Secrets (念のため)
+# Firebase Service Account Key
+# このファイルは機密情報を含みます。
+# streamlit_app/serviceAccountKey.json に配置されていることを想定しています。
+streamlit_app/serviceAccountKey.json
+
+# Other sensitive files
 *.pem
 *.key
