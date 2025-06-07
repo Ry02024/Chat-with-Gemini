@@ -1,0 +1,74 @@
+name: Deploy to GCP (Auth Service and Streamlit App)
+
+on:
+  push:
+    branches:
+      - main  # mainブランチへのプッシュをトリガーとする (本番用ブランチに合わせてください)
+  workflow_dispatch: # GitHubのActionsタブから手動で実行できるようにする
+
+jobs:
+  deploy-auth-function:
+    name: Deploy Auth Service (Cloud Function)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write' # Workload Identity Federation用に推奨、SAキーでも害はない
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        id: auth_cf # ステップにIDを付与
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ steps.auth_cf.outputs.project_id }} # 認証ステップからプロジェクトIDを取得
+
+      - name: Deploy Auth Service (Cloud Function)
+        run: |
+          echo "Starting deployment of Auth Service (Cloud Function)..."
+          gcloud builds submit --config cloudbuild_auth.yaml . --project=${{ steps.auth_cf.outputs.project_id }}
+          echo "Auth Service deployment submitted."
+
+  deploy-streamlit-app:
+    name: Deploy Streamlit App (Cloud Run)
+    runs-on: ubuntu-latest
+    needs: deploy-auth-function # 認証関数のデプロイが成功した後に実行
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        id: auth_streamlit # ステップにIDを付与
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ steps.auth_streamlit.outputs.project_id }}
+
+      - name: Configure Docker for Artifact Registry
+        # _AR_HOSTNAMEはcloudbuild_streamlit.yamlのsubstitutionsで定義されている値と合わせる
+        run: gcloud auth configure-docker asia-northeast1-docker.pkg.dev
+
+      - name: Deploy Streamlit App (Cloud Run)
+        run: |
+          echo "Starting deployment of Streamlit App..."
+          # 注意: cloudbuild_streamlit.yaml内の _CF_AUTH_SERVICE_BASE_URL と
+          # _STREAMLIT_APP_PUBLIC_URL が、このデプロイ時点で最新かつ正しい値に
+          # 設定されていることが非常に重要です。
+          # もしCloud FunctionsのURLがこのワークフロー内で動的に変わる場合は、
+          # それを取得して --substitutions で渡す必要があります。
+          gcloud builds submit --config cloudbuild_streamlit.yaml . --project=${{ steps.auth_streamlit.outputs.project_id }}
+          echo "Streamlit App deployment submitted."
