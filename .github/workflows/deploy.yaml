@@ -32,7 +32,7 @@ jobs:
       - name: Deploy Auth Service (Cloud Function)
         run: |
           echo "Starting deployment of Auth Service (Cloud Function)..."
-          gcloud builds submit --config cloudbuild.yaml --no-source --project=${{ steps.auth_cf.outputs.project_id }}
+          gcloud builds submit --config cloudbuild.yaml . --project=${{ steps.auth_cf.outputs.project_id }}
           echo "Auth Service deployment submitted."
 
   deploy-streamlit-app:
